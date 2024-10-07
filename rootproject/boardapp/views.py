@@ -1,148 +1,92 @@
-from django.shortcuts import render, get_object_or_404, redirect
-from django.contrib.auth.decorators import login_required
-from django.contrib.auth import login, authenticate, logout
-from django.contrib import messages
+from rest_framework import viewsets, status
+from rest_framework.response import Response
+from rest_framework.decorators import action
+from rest_framework.permissions import IsAuthenticated, AllowAny
+from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.authentication import JWTAuthentication
+from django.contrib.auth import authenticate
 from .models import Post
-from .forms import PostForm, LoginForm, CustomUserCreationForm
-from django.http import JsonResponse
-import json
-# Create your views here.
+from .serializers import PostSerializer, UserSerializer, LoginSerializer
+from .permissions import IsAuthorOrReadOnly
 
+class UserViewSet(viewsets.GenericViewSet):
+    serializer_class = UserSerializer
+    permission_classes = [AllowAny]
 
-# 사용자 회원가입 엔드포인트
-def user_signup(request):
-    if request.method == "POST":
-        form = CustomUserCreationForm(request.POST)
-        if form.is_valid():
-            user = form.save()
-            login(request, user)
-            return JsonResponse({"message": "User created successfully", "user_id": user.email}, status=201)
-        else:
-            return JsonResponse(form.errors, status=400)
-    return JsonResponse({"message": "Invalid request method"}, status=405)
+    @action(detail=False, methods=['post'])
+    def signup(self, request):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user = serializer.save()
+        refresh = RefreshToken.for_user(user)
+        return Response({
+            "message": "User created successfully",
+            "user_id": user.email,
+            "tokens": {
+                "refresh": str(refresh),
+                "access": str(refresh.access_token),
+            }
+        }, status=status.HTTP_201_CREATED)
 
-# 사용자 로그인 엔드포인트
-def user_login(request):
-    if request.method == "POST":
-        form = LoginForm(request.POST)
-        if form.is_valid():
-            email = form.cleaned_data['email']
-            password = form.cleaned_data["password"]
-            user = authenticate(request, email=email, password=password)
-            if user is not None:
-                login(request, user)
-                return JsonResponse({"message": "Logged in successfully", "user_id": user.email})
-            else:
-                return JsonResponse({"error": "Invalid credentials"}, status=400)
-        else:
-            return JsonResponse(form.errors, status=400)
-    return JsonResponse({"message": "Invalid request method"}, status=405)
-
-# 사용자 로그아웃 엔드포인트
-def user_logout(request):
-    logout(request)
-    return JsonResponse({"message": "Logged out successfully"})
-
-
-# 새로운 게시글을 생성하는 엔드포인트
-@login_required(login_url="/board/login/")
-def post_create(request):
-    if request.method == "POST":
-        form = PostForm(request.POST)
-        if form.is_valid():
-            post = form.save(commit=False)
-            post.id = request.user
-            post.save()
-            return JsonResponse({"message": "Post created successfully", "post_id": post.postid}, status=201)
-        else:
-            return JsonResponse(form.errors, status=400)
-    return JsonResponse({"message": "Invalid request method"}, status=405)
-
-# 게시글 목록을 조회하는 엔드포인트
-def post_list(request):
-    if request.method == "GET":
-        posts = Post.objects.all().order_by('-postdate').values()
-        post_list = []
-        for post in posts:
-            post_list.append({
-                "postid": post["postid"],
-                "title": post['title'],
-                "content": post['content'],
-                "user": post['id_id'],
-                "created_at": post['postdate']
+    @action(detail=False, methods=['post'])
+    def login(self, request):
+        serializer = LoginSerializer(data=request.data, context={'request': request})
+        serializer.is_valid(raise_exception=True)
+        user = serializer.validated_data['user']
+        if user:
+            refresh = RefreshToken.for_user(user)
+            return Response({
+                "message": "로그인 성공",
+                "user_id": user.email,
+                "tokens": {
+                    "refresh": str(refresh),
+                    "access": str(refresh.access_token),
+                }
             })
-        return JsonResponse(post_list, safe=False)
-    return JsonResponse({"message": "Invalid request method"}, status=405)
+        return Response({"error": "Invalid credentials"}, status=status.HTTP_401_UNAUTHORIZED)
 
-# 특정 게시글을 조회하는 엔드포인트
-def post_detail(request, pk):
-    try:
-        post = Post.objects.get(pk=pk)
-        print(post)
-    except Post.DoesNotExist:
-        return JsonResponse({"error": "Post not found"}, status=404)
+    @action(detail=False, methods=['post'])
+    def logout(self, request):
+        return Response({"message": "Logout should be handled on the client side"})
 
-    if request.method == "GET":
-        post_data = {
-            "postid": post.postid,
-            "title": post.title,
-            "content": post.content,
-            "user": post.id_id,
-            "created_at": post.postdate,
-        }
-        return JsonResponse(post_data)
-    return JsonResponse({"message": "Invalid request method"}, status=405)
+class PostViewSet(viewsets.ModelViewSet):
+    authentication_classes = [JWTAuthentication]
+    queryset = Post.objects.all().order_by('-postdate')
+    serializer_class = PostSerializer
 
-# 특정 게시글을 수정하는 엔드포인트
-@login_required(login_url="/board/login/")
-def post_update(request, pk):
-    try:
-        post = Post.objects.get(pk=pk)
-    except Post.DoesNotExist:
-        return JsonResponse({"error": "Post not found"}, status=404)
-
-    if request.user != post.id:
-        return JsonResponse({"error": "You are not authorized to edit this post"}, status=403)
-    
-    if request.method == "GET":
-        data = {
-            "id": post.postid,
-            "title": post.title,
-            "content": post.content,
-            "author": post.id_id,
-            "created_at": post.postdate.isoformat(),
-        }
-        print(data)
-        return JsonResponse(data)
-    
-    elif request.method == "PUT":
-        print(request.body)
-        try:
-            data = json.loads(request.body)
-        except json.JSONDecodeError:
-            return JsonResponse({"error": "Invalid JSON data"}, status=400)
-
-        form = PostForm(data, instance=post)
-        if form.is_valid():
-            post = form.save()
-            return JsonResponse({"message": "Post updated successfully", "post_id": post.id_id})
+    def get_permissions(self):
+        if self.action == 'list':
+            permission_classes = [AllowAny]
         else:
-            return JsonResponse({"error": form.errors}, status=400)
-    return JsonResponse({"message": "Invalid request method"}, status=405)
-        
+            permission_classes = [IsAuthenticated, IsAuthorOrReadOnly]
+        return [permission() for permission in permission_classes]
 
-# 특정 게시글을 삭제하는 엔드포인트
-@login_required(login_url="/board/login/")
-def post_delete(request, pk):
-    try:
-        post = Post.objects.get(pk=pk)
-    except Post.DoesNotExist:
-        return JsonResponse({"error": "Post not found"}, status=404)
+    def perform_create(self, serializer):
+        serializer.save(id=self.request.user)
 
-    if request.user != post.id:
-        return JsonResponse({"error": "You are not authorized to delete this post"}, status=403)
+    def list(self, request):
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
 
-    if request.method == "DELETE":
-        post.delete()
-        return JsonResponse({"message": "Post deleted successfully"}, status=204)
-    return JsonResponse({"message": "Invalid request method"}, status=405)
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
+
+    def retrieve(self, request, pk=None):
+        post = self.get_object()
+        serializer = self.get_serializer(post)
+        return Response(serializer.data)
+
+    def update(self, request, pk=None):
+        post = self.get_object()
+        serializer = self.get_serializer(post, data=request.data)
+        serializer.is_valid(raise_exception=True)
+        self.perform_update(serializer)
+        return Response({"message": "Post updated successfully", "post_id": post.postid})
+
+    def destroy(self, request, pk=None):
+        post = self.get_object()
+        self.perform_destroy(post)
+        return Response({"message": "Post deleted successfully"}, status=status.HTTP_204_NO_CONTENT)

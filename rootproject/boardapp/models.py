@@ -28,13 +28,7 @@ class CustomUserManager(BaseUserManager):
 
 class CustomUser(AbstractBaseUser, PermissionsMixin):
     id = models.AutoField(primary_key=True)
-    email = models.CharField(max_length=255,
-                             validators=[
-                                 RegexValidator(
-                                     regex=r'^[^@]+@[^@]+$',
-                                     message='이메일 주소에는 정확히 하나의 @ 문자가 포함되어야 합니다.',
-                                     code='invalid_email'
-                                 ),],
+    email = models.EmailField(max_length=255,
                                 unique=True)
     name = models.CharField(max_length=300)
     is_active = models.BooleanField(default=True)
